@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Beckner Recipes</title>
-    <!-- PWA related tags (manifest, theme-color, apple-touch-icon) have been removed -->
     <script src="https://cdn.jsdelivr.net/npm/compressorjs@1.2.1/dist/compressor.min.js"></script>
     <style>
         /* --- CSS Custom Properties --- */
@@ -206,9 +205,6 @@
         .stars span { font-size: 1.5rem; cursor: pointer; color: #ccc; }
         .stars span.filled { color: #ffc107; }
         
-        /* Floating Timer (removed from HTML, but CSS kept for reference if needed) */
-        /* #timerIndicator { position: fixed; bottom: 25px; right: 25px; background: var(--header-color); color: white; padding: 12px 20px; border-radius: 50px; font-weight: bold; display: none; z-index: 2000; align-items: center; gap: 10px; } */
-
         /* TEMPORARY DEBUGGING INFO */
         #debugInfo {
             position: fixed;
@@ -229,7 +225,6 @@
     <div class="top-bar">
         <h1>Beckner Recipes</h1>
         <div class="header-actions">
-            <!-- Timer button removed -->
             <button class="icon-btn" id="darkModeBtn">🌙</button>
         </div>
     </div>
@@ -281,8 +276,6 @@
         <p id="emptyFavMessage" style="text-align:center; display:none; padding:20px;">No favorites yet.</p>
     </div>
 </div>
-
-<!-- Timer Indicator HTML removed -->
 
 <!-- TEMPORARY DEBUGGING INFO -->
 <div id="debugInfo">Loading...</div>
@@ -447,19 +440,16 @@
     import { getFirestore, collection, getDocs, addDoc, updateDoc, deleteDoc, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
     import { getStorage, ref, uploadString, getDownloadURL, deleteObject } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-storage.js";
 
-    // Service Worker registration removed
-    // if ('serviceWorker' in navigator) { window.addEventListener('load', () => { navigator.serviceWorker.register('./sw.js').catch(console.error); }); }
-
     // YOU WILL UPDATE THIS `firebaseConfig` WITH YOUR OWN PROJECT'S CONFIG
-const firebaseConfig = {
-  apiKey: "AIzaSyAdFq_gg-uJulxvPbdKo0c1LIDA_0IAa-A",
-  authDomain: "becknerhouserecipes.firebaseapp.com",
-  projectId: "becknerhouserecipes",
-  storageBucket: "becknerhouserecipes.firebasestorage.app",
-  messagingSenderId: "164311734306",
-  appId: "1:164311734306:web:07bb84bd52f46ea726127b",
-  measurementId: "G-DR1RJZFXN4"
-};
+    const firebaseConfig = {
+        apiKey: "YOUR_API_KEY",
+        authDomain: "YOUR_AUTH_DOMAIN",
+        projectId: "YOUR_PROJECT_ID",
+        storageBucket: "YOUR_STORAGE_BUCKET",
+        messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+        appId: "YOUR_APP_ID",
+        measurementId: "YOUR_MEASUREMENT_ID" 
+    };
 
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
@@ -469,7 +459,7 @@ const firebaseConfig = {
     let recipes = [], favorites = [], mealPlan = {};
     let allTags = []; 
     let selectedTagsFilter = new Set(); 
-    let currentImageFile = null, activeRecipeId = null; // Timer-related variables removed
+    let currentImageFile = null, activeRecipeId = null; 
 
     // --- INIT ---
     async function init() {
@@ -1017,7 +1007,7 @@ const firebaseConfig = {
 
         cleanedName = cleanedName.replace(/^[,\s.]+/, '').replace(/[,\s.]+$/, '').replace(/\s{2,}/g, ' ').trim();
         
-        const exceptions = ['molasses', 'asparagus', 'oats', 'chips', 'nuts', 'beans', 'peas', 'greens', 'glass'];
+        const exceptions = ['molasses', 'asparagus', 'oats', 'chips', 'nuts', 'beans', 'peas', 'greens', 'glass', 'can'];
         if (cleanedName.length > 3 && cleanedName.endsWith('s') && !exceptions.includes(cleanedName)) {
              cleanedName = cleanedName.slice(0, -1);
         }
@@ -1039,36 +1029,65 @@ const firebaseConfig = {
         };
     }
 
+    // --- MODIFIED formatFraction function ---
     function formatFraction(d) {
         if (typeof d !== 'number' || isNaN(d) || d === 0) return "0";
-        const tolerance = 0.005; 
+
+        // Map common decimals to string fractions for better readability/compatibility
+        const decimalToStringFraction = {
+            0.125: "1/8",
+            0.166: "1/6", // Approximation for 1/6
+            0.2:   "1/5",
+            0.25:  "1/4",
+            0.333: "1/3", // Approximation for 1/3
+            0.375: "3/8",
+            0.4:   "2/5",
+            0.5:   "1/2",
+            0.6:   "3/5",
+            0.625: "5/8",
+            0.666: "2/3", // Approximation for 2/3
+            0.75:  "3/4",
+            0.8:   "4/5",
+            0.833: "5/6", // Approximation for 5/6
+            0.875: "7/8"
+        };
+
         const whole = Math.floor(d);
         const rem = d - whole;
-
-        if (Math.abs(rem) < tolerance) return Math.round(d).toString();
-
-        const fracs = {
-            0.125: "⅛", 0.166: "⅙", 0.2: "⅕", 0.25: "¼", 0.333: "⅓", 0.375: "⅜",
-            0.4: "⅖", 0.5: "½", 0.6: "⅗", 0.625: "⅝", 0.666: "⅔", 0.75: "¾",
-            0.8: "⅘", 0.833: "⅚", 0.875: "⅞"
-        };
         
-        let closestFractionSymbol = "";
-        let minDiff = 1; 
+        // If it's a whole number (or very close), return it as a string
+        if (rem < 0.005) { 
+            return Math.round(d).toString();
+        }
 
-        for (let key in fracs) {
+        let fractionPart = '';
+        const tolerance = 0.005; // Tolerance for matching a decimal to a known fraction
+
+        // Try to find a direct match for the remainder
+        let bestMatchValue = null;
+        for (let key in decimalToStringFraction) {
             const val = parseFloat(key);
-            if (Math.abs(val - rem) < minDiff) {
-                minDiff = Math.abs(val - rem);
-                closestFractionSymbol = fracs[key];
+            if (Math.abs(val - rem) < tolerance) {
+                bestMatchValue = decimalToStringFraction[key];
+                break;
             }
         }
 
-        if (closestFractionSymbol && minDiff < tolerance * 2) { 
-            return whole > 0 ? `${whole} ${closestFractionSymbol}` : closestFractionSymbol;
+        if (bestMatchValue) {
+            fractionPart = bestMatchValue;
+        } else {
+            // If no common fraction matched, fall back to two decimal places
+            return d.toFixed(2).replace(/\.?0+$/, ''); 
         }
-        return d.toFixed(2).replace(/\.?0+$/, ''); 
+
+        // Combine whole and fraction parts
+        if (whole > 0) {
+            return `${whole} ${fractionPart}`;
+        } else {
+            return fractionPart;
+        }
     }
+
 
     function renderShoppingList() {
         updateDebugInfo("Rendering shopping list...");
@@ -1215,7 +1234,6 @@ const firebaseConfig = {
         updateDebugInfo(`Saving recipe: ${data.title}`);
         try {
             if(currentImageFile) {
-                // Generate a unique file path for the image in Firebase Storage
                 const imagePath = `images/recipe_img_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
                 const imageRef = ref(storage, imagePath);
                 
@@ -1223,7 +1241,6 @@ const firebaseConfig = {
                 data.imageData = await getDownloadURL(snap.ref);
                 updateDebugInfo("Image uploaded.");
             } else if (data.id) { 
-                // If it's an existing recipe and no new image, retain the old one
                 const old = recipes.find(r=>r.id===data.id);
                 if(old) data.imageData = old.imageData;
             }
@@ -1315,13 +1332,15 @@ const firebaseConfig = {
 
             let scaledQuantity = parsed.quantity * scale;
 
+            let displayQuantityString = formatFraction(scaledQuantity); // Always use formatFraction for scaled quantities
+
             if (parsed.unit && parsed.name) {
-                displayText = `${formatFraction(scaledQuantity)} ${parsed.unit} ${parsed.name}`;
+                displayText = `${displayQuantityString} ${parsed.unit} ${parsed.name}`;
             } else if (parsed.name && parsed.quantity > 0 && !isNaN(scaledQuantity)) {
                 if (scaledQuantity === 1 && !parsed.unit && parsed.name.split(' ').length === 1) {
                      displayText = parsed.name;
                 } else {
-                     displayText = `${formatFraction(scaledQuantity)} ${parsed.name}`;
+                     displayText = `${displayQuantityString} ${parsed.name}`;
                 }
             } else {
                 displayText = ing; 
@@ -1431,8 +1450,6 @@ const firebaseConfig = {
 
     // --- EVENT LISTENERS ---
     
-    // Timer functions have been removed.
-
     // View Switching
     ['recipes','mealPlan','shopping','favorites'].forEach(v => {
         document.getElementById(`view${v.charAt(0).toUpperCase()+v.slice(1)}Btn`).onclick = () => showView(v);
@@ -1558,11 +1575,6 @@ const firebaseConfig = {
     };
 
     document.getElementById('btnPrint').onclick = () => window.print();
-
-    // Add New Tag (You had this as addCat in the original, I'm adapting it here)
-    // Note: The HTML for this button/input was missing in the original, but the logic was there.
-    // If you want an "Add Tag" input/button outside the Recipe Modal, you'll need to add its HTML.
-    // For now, new tags are implicitly added when a recipe is saved with a new tag.
 
     // Meal Plan Week Select
     document.getElementById('mealPlanWeekSelect').onchange = () => { 
