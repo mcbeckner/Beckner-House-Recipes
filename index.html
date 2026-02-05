@@ -94,6 +94,7 @@
         .add-meal-day-btn { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); background: rgba(255,255,255,0.2); border: none; color: white; border-radius: 4px; width: 24px; height: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; }
         .day-content { padding: 10px; flex-grow: 1; display: flex; flex-direction: column; gap: 10px; }
         .meal-card { background: var(--card-bg); border-radius: 6px; overflow: hidden; box-shadow: 0 2px 4px var(--shadow-color); position: relative; cursor: pointer; border: 1px solid var(--border-color); }
+        .meal-card.meal-placeholder { background: var(--bg-color); /* Lighter background for placeholders */ font-style: italic; text-align: center; display: flex; align-items: center; justify-content: center; min-height: 80px;} /* Style for placeholder cards */
         .meal-card img { width: 100%; height: 80px; object-fit: cover; display: block; }
         .meal-card-title { padding: 6px; font-size: 0.85rem; font-weight: 500; }
         .remove-meal-btn { position: absolute; top: 4px; right: 4px; background: rgba(0,0,0,0.6); color: white; border-radius: 50%; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center; font-size: 10px; border: none; }
@@ -295,7 +296,7 @@
 <!-- TEMPORARY DEBUGGING INFO -->
 <div id="debugInfo">Loading...</div>
 
-<!-- ADD/EDIT MODAL -->
+<!-- ADD/EDIT RECIPE MODAL -->
 <div id="recipeModal" class="modal-overlay">
     <div class="modal-content" style="max-width: 600px; display:block; padding:0;">
         <div class="modal-header">
@@ -349,14 +350,27 @@
     </div>
 </div>
 
-<!-- SIMPLE SELECT MODAL FOR MEAL PLAN -->
-<div id="selectRecipeModal" class="modal-overlay">
+<!-- ADD MEAL ITEM MODAL (Unified for both recipes and placeholders) -->
+<div id="addMealItemModal" class="modal-overlay">
     <div class="modal-content" style="max-width: 400px; height:auto; padding:20px; display:block;">
-        <h3 style="margin-top:0;">Add to <span id="targetDayName"></span></h3>
-        <select id="mealPlanSelectDropdown" style="width:100%; padding:10px; font-size:1rem; margin-bottom:15px;"></select>
+        <h3 style="margin-top:0;">Add to <span id="addMealDayName"></span></h3>
+        
+        <label for="addMealRecipeSelect" style="display:block; margin-bottom:5px;">Select a Recipe:</label>
+        <select id="addMealRecipeSelect" style="width:100%; padding:10px; font-size:1rem; margin-bottom:15px;">
+            <option value="">-- Select a Recipe --</option>
+        </select>
+        
+        <p style="text-align:center; margin:10px 0;">-- OR --</p>
+
+        <label for="addMealPlaceholderText" style="display:block; margin-bottom:5px;">Enter Custom Meal/Placeholder:</label>
+        <input type="text" id="addMealPlaceholderText" placeholder="e.g., Leftovers, Takeout" style="margin-bottom:15px;">
+
+        <input type="hidden" id="addMealTargetDayKey">
+        <input type="hidden" id="addMealInitialRecipeId"> <!-- To pre-select if opened from card/detail -->
+
         <div style="display:flex; gap:10px; justify-content:flex-end;">
-            <button id="cancelSelectBtn" style="background:none; border:1px solid #ccc;">Cancel</button>
-            <button id="confirmSelectBtn" class="primary-btn">Add to Day</button>
+            <button id="cancelAddMealBtn" style="background:none; border:1px solid #ccc;">Cancel</button>
+            <button id="confirmAddMealBtn" class="primary-btn">Add Meal</button>
         </div>
     </div>
 </div>
@@ -394,6 +408,7 @@
             </div>
             <a id="detSourceLink" href="#" target="_blank" class="source-link" style="display:none;">View Source ↗</a>
             <div style="margin-left: auto; display:flex; gap:10px;">
+                <button id="btnAddToPlanDetail" class="primary-btn" style="padding:4px 10px; font-size:0.8rem;">Add to Plan</button>
                 <button id="btnEditRecipe" class="primary-btn" style="padding:4px 10px; font-size:0.8rem;">Edit</button>
                 <button id="btnPrint" class="primary-btn" style="padding:4px 10px; font-size:0.8rem;">Print</button>
             </div>
@@ -486,11 +501,16 @@ const firebaseConfig = {
     const storage = getStorage(app); 
 
     // --- STATE ---
-    let recipes = [], favorites = [], mealPlan = {};
+    let recipes = [], favorites = [];
+    // Meal plan now stores objects: { type: 'recipe', id: 'recipeId' } or { type: 'placeholder', text: 'Leftovers', id: 'uniqueId' }
+    let mealPlan = {}; 
     let allTags = []; 
     let selectedTagsFilter = new Set(); 
     let currentImageFile = null, activeRecipeId = null;
-    let timerInterval = null, timerEndTime = null; // Timer variables restored
+    let timerInterval = null, timerEndTime = null;
+
+    // --- CONSTANTS ---
+    const WEEK_DAYS_ORDER = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
     // --- INIT ---
     async function init() {
@@ -514,7 +534,17 @@ const firebaseConfig = {
                 getDoc(doc(db, 'appData', 'tags'))
             ]);
             favorites = favSnap.exists() ? (favSnap.data().ids || []) : [];
-            mealPlan = planSnap.exists() ? (planSnap.data().plan || {}) : {};
+            // Handle potential old mealPlan format (array of recipe IDs) or new format (array of objects)
+            const loadedMealPlan = planSnap.exists() ? (planSnap.data().plan || {}) : {};
+            
+            // Data migration for mealPlan: if old format (array of strings), convert to new object format
+            for (const dayKey in loadedMealPlan) {
+                if (Array.isArray(loadedMealPlan[dayKey]) && loadedMealPlan[dayKey].length > 0 && typeof loadedMealPlan[dayKey][0] === 'string') {
+                    loadedMealPlan[dayKey] = loadedMealPlan[dayKey].map(id => ({ type: 'recipe', id: id }));
+                }
+            }
+            mealPlan = loadedMealPlan;
+
             allTags = tagsSnap.exists() ? (tagsSnap.data().list || ['Breakfast', 'Lunch', 'Dinner', 'Dessert', 'Snacks']).sort() : ['Breakfast', 'Lunch', 'Dinner', 'Dessert', 'Snacks'].sort();
             updateDebugInfo("Global data loaded.");
         } catch(e) { 
@@ -638,16 +668,26 @@ const firebaseConfig = {
         div.innerHTML = `
             <img src="${r.imageData || 'https://via.placeholder.com/300x180?text=Food'}" loading="lazy">
             <div class="card-actions">
+                <button class="card-btn plan" title="Add to Meal Plan" data-id="${r.id}">📅</button>
                 <button class="card-btn fav ${favorites.includes(r.id)?'active':''}" data-id="${r.id}">♥</button>
                 <button class="card-btn delete" data-id="${r.id}">🗑</button>
             </div>
             <h3>${r.title}</h3>
         `;
+        
+        // Add to Plan Button Logic
+        div.querySelector('.plan').onclick = (e) => { 
+            e.stopPropagation(); 
+            // Call the unified modal for adding meals, pre-selecting this recipe
+            openAddMealItemModal(null, null, r.id, r.title);
+        };
+
         div.querySelector('.fav').onclick = (e) => { e.stopPropagation(); toggleFavorite(r.id); };
         div.querySelector('.delete').onclick = (e) => { e.stopPropagation(); deleteRecipe(r.id); }; 
         div.onclick = () => openDetail(r);
         div.addEventListener('dragstart', (e) => {
-            e.dataTransfer.setData('text/plain', r.id);
+            // When dragging a recipe from the main list, provide the recipe ID and type
+            e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'recipe', id: r.id }));
             e.dataTransfer.setData('source-type', 'list'); 
         });
         return div;
@@ -738,7 +778,7 @@ const firebaseConfig = {
         const grid = document.getElementById('mealPlanGrid');
         grid.innerHTML = '';
         const week = document.getElementById('mealPlanWeekSelect').value;
-        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        const days = WEEK_DAYS_ORDER; // Use the Sunday-start order
 
         days.forEach(day => {
             const dayKey = `${week}-${day.toLowerCase()}`;
@@ -756,7 +796,7 @@ const firebaseConfig = {
 
             col.querySelector('.add-meal-day-btn').onclick = (e) => {
                 e.stopPropagation(); 
-                openSelectModal(dayKey, day);
+                openAddMealItemModal(dayKey, day); // Use the unified modal for placeholder or recipe
             };
 
             const content = col.querySelector('.day-content');
@@ -777,47 +817,71 @@ const firebaseConfig = {
             content.addEventListener('drop', async (e) => {
                 e.preventDefault();
                 col.classList.remove('drag-over');
-                const recipeId = e.dataTransfer.getData('text/plain');
+                // Parse the full meal object from dataTransfer
+                const mealItemData = JSON.parse(e.dataTransfer.getData('text/plain')); 
                 const sourceType = e.dataTransfer.getData('source-type'); 
                 const sourceDayKey = e.dataTransfer.getData('source-day'); 
                 
-                if (!recipeId) {
-                    updateDebugInfo("No recipe ID in dataTransfer, ignoring drop.");
+                if (!mealItemData || !mealItemData.id) { // Ensure id is present for both types
+                    updateDebugInfo("No meal item data in dataTransfer, ignoring drop.");
                     return;
                 }
 
                 if (!mealPlan[dayKey]) mealPlan[dayKey] = [];
 
+                // Find the index of the dragged item within the source day's mealPlan
+                const draggedItemIndex = sourceDayKey ? mealPlan[sourceDayKey].findIndex(item => item.id === mealItemData.id) : -1;
+
                 if (sourceType === 'plan' && sourceDayKey && sourceDayKey !== dayKey) {
-                    updateDebugInfo(`Performing MOVE: Removing from ${sourceDayKey}, adding to ${dayKey}`);
-                    mealPlan[sourceDayKey] = mealPlan[sourceDayKey].filter(id => id !== recipeId);
-                    if (mealPlan[sourceDayKey].length === 0) delete mealPlan[sourceDayKey]; 
+                    updateDebugInfo(`Performing MOVE: Moving item ${mealItemData.id} from ${sourceDayKey} to ${dayKey}`);
+                    // Remove from source day
+                    if (draggedItemIndex !== -1) {
+                        mealPlan[sourceDayKey].splice(draggedItemIndex, 1);
+                        if (mealPlan[sourceDayKey].length === 0) delete mealPlan[sourceDayKey]; 
+                    }
                     
-                    if (!mealPlan[dayKey].includes(recipeId)) {
-                        const newOrder = Array.from(content.children).map(el => el.dataset.recipeId);
-                        if (!newOrder.includes(recipeId)) {
-                            mealPlan[dayKey] = newOrder.concat(recipeId);
-                        } else {
-                            mealPlan[dayKey] = newOrder;
+                    // Add to target day, maintaining order
+                    const newOrderMealIds = Array.from(content.children).map(el => el.dataset.mealId);
+                    const existingItemOnTargetDay = mealPlan[dayKey].find(item => item.id === mealItemData.id);
+
+                    if (!existingItemOnTargetDay) { // Only add if not already present
+                        const targetIndex = newOrderMealIds.indexOf(mealItemData.id);
+                        if (targetIndex !== -1) { // Insert at specific position if dropped between elements
+                             mealPlan[dayKey].splice(targetIndex, 0, mealItemData);
+                        } else { // Append to end if no specific target
+                             mealPlan[dayKey].push(mealItemData);
                         }
-                    } else {
-                        const newOrder = Array.from(content.children).map(el => el.dataset.recipeId);
-                        mealPlan[dayKey] = newOrder;
+                    } else { 
+                        // If item already exists on target day, assume reordering within the same day for a different position
+                        // This case is unlikely for moves between days unless the item was duplicated
+                        // For simplicity, we just rebuild the order based on DOM.
+                        mealPlan[dayKey] = newOrderMealIds.map(id => {
+                            // Find the original item from mealPlan[dayKey] or use the dragged item if it's the one
+                            return mealPlan[dayKey].find(item => item.id === id) || (id === mealItemData.id ? mealItemData : null);
+                        }).filter(Boolean);
                     }
                 } 
                 else if (sourceType === 'list') {
-                    updateDebugInfo(`Performing COPY: Adding to ${dayKey} from main list.`);
-                    if (mealPlan[dayKey].includes(recipeId)) {
+                    updateDebugInfo(`Performing COPY: Adding recipe ${mealItemData.id} to ${dayKey} from main list.`);
+                    // When dragging from recipe list, it's always a recipe
+                    const newItem = { type: 'recipe', id: mealItemData.id };
+                    if (mealPlan[dayKey].some(item => item.id === newItem.id && item.type === newItem.type)) {
                         alert("Recipe already on this day's plan.");
                     } else {
-                        const newOrder = Array.from(content.children).map(el => el.dataset.recipeId);
-                        mealPlan[dayKey] = newOrder.filter(id => id !== recipeId).concat(recipeId); 
+                        const newOrderMealIds = Array.from(content.children).map(el => el.dataset.mealId);
+                        const targetIndex = newOrderMealIds.indexOf(mealItemData.id); 
+                        if (targetIndex !== -1) { // Insert at a specific position
+                            mealPlan[dayKey].splice(targetIndex, 0, newItem);
+                        } else { // Append to end
+                            mealPlan[dayKey].push(newItem); 
+                        }
                     }
                 } 
                 else if (sourceType === 'plan' && sourceDayKey === dayKey) {
                     updateDebugInfo(`Performing REORDER within ${dayKey}`);
-                    const newOrder = Array.from(content.children).map(el => el.dataset.recipeId);
-                    mealPlan[dayKey] = newOrder;
+                    // Reorder items in the array based on their new DOM order
+                    const newOrderMealIds = Array.from(content.children).map(el => el.dataset.mealId);
+                    mealPlan[dayKey] = newOrderMealIds.map(id => mealPlan[dayKey].find(item => item.id === id) || mealItemData).filter(Boolean); // Reconstruct array based on DOM order
                 } else {
                     updateDebugInfo("Drop event occurred, but no specific action taken based on source type or day.");
                 }
@@ -828,33 +892,58 @@ const firebaseConfig = {
                 renderMealPlanGrid(); 
             });
 
-            (mealPlan[dayKey] || []).forEach(id => {
-                const r = recipes.find(x => x.id === id);
-                if(r) content.appendChild(createMealCardElement(r, dayKey));
+            (mealPlan[dayKey] || []).forEach(mealItem => { // Loop through meal objects
+                content.appendChild(createMealCardElement(mealItem, dayKey));
             });
             grid.appendChild(col);
         });
     }
 
-    function createMealCardElement(r, dayKey) {
+    function createMealCardElement(mealItem, dayKey) {
         const card = document.createElement('div');
         card.className = 'meal-card';
+        card.dataset.mealId = mealItem.id; // Use unique ID for both recipes and placeholders
         card.draggable = true;
-        card.dataset.recipeId = r.id; 
+
+        let title = '';
+        let imageSrc = '';
+        let isPlaceholder = false;
+
+        if (mealItem.type === 'recipe') {
+            const r = recipes.find(x => x.id === mealItem.id);
+            if (r) {
+                title = r.title;
+                imageSrc = r.imageData || 'https://via.placeholder.com/150x90?text=Food';
+                card.onclick = () => openDetail(r); // Only recipes are clickable to open details
+            } else {
+                title = `(Unknown Recipe: ${mealItem.id})`;
+                imageSrc = 'https://via.placeholder.com/150x90?text=Error';
+            }
+        } else if (mealItem.type === 'placeholder') {
+            title = mealItem.text;
+            imageSrc = 'https://via.placeholder.com/150x90?text=Meal'; // Generic image for placeholders
+            isPlaceholder = true;
+            card.classList.add('meal-placeholder'); // Add a specific class for styling
+            // Placeholder cards are not clickable to open recipe details
+        }
         
-        card.innerHTML = `<img src="${r.imageData || 'https://via.placeholder.com/150x90?text=Food'}" loading="lazy"><div class="meal-card-title">${r.title}</div><button class="remove-meal-btn">✕</button>`;
+        card.innerHTML = `
+            ${!isPlaceholder ? `<img src="${imageSrc}" loading="lazy">` : ''}
+            <div class="meal-card-title">${title}</div>
+            <button class="remove-meal-btn">✕</button>
+        `;
         
         card.querySelector('.remove-meal-btn').onclick = async (e) => {
             e.stopPropagation();
-            updateDebugInfo(`Removing recipe ${r.id} from day ${dayKey}`);
-            mealPlan[dayKey] = mealPlan[dayKey].filter(x => x !== r.id);
+            updateDebugInfo(`Removing meal item ${mealItem.id} from day ${dayKey}`);
+            mealPlan[dayKey] = mealPlan[dayKey].filter(x => x.id !== mealItem.id); // Filter by object ID
             if (mealPlan[dayKey].length === 0) delete mealPlan[dayKey]; 
             await setDoc(doc(db, 'appData', 'mealPlan'), { plan: mealPlan });
             renderMealPlanGrid();
         };
         
         card.addEventListener('dragstart', (e) => {
-            e.dataTransfer.setData('text/plain', r.id);
+            e.dataTransfer.setData('text/plain', JSON.stringify(mealItem)); // Pass the whole meal object
             e.dataTransfer.setData('source-type', 'plan'); 
             e.dataTransfer.setData('source-day', dayKey); 
             e.target.classList.add('dragging'); 
@@ -864,7 +953,6 @@ const firebaseConfig = {
             e.target.classList.remove('dragging'); 
         });
         
-        card.onclick = () => openDetail(r);
         return card;
     }
 
@@ -882,37 +970,81 @@ const firebaseConfig = {
         }, { offset: -Infinity }).element;
     }
 
-    // Manual Add Modal for Meal Plan Days
-    let targetDayKeyForAdd = null;
-    function openSelectModal(dayKey, dayName) {
-        targetDayKeyForAdd = dayKey;
-        document.getElementById('targetDayName').textContent = dayName;
-        const sel = document.getElementById('mealPlanSelectDropdown');
-        sel.innerHTML = '<option value="">Select a Recipe...</option>';
+    // Unified Modal for adding meals to a day
+    function openAddMealItemModal(dayKey = null, dayName = null, initialRecipeId = null, initialRecipeTitle = null) {
+        const addMealModal = document.getElementById('addMealItemModal');
+        const addMealRecipeSelect = document.getElementById('addMealRecipeSelect');
+        const addMealPlaceholderText = document.getElementById('addMealPlaceholderText');
+        const addMealDayNameSpan = document.getElementById('addMealDayName');
+        const addMealTargetDayKeyInput = document.getElementById('addMealTargetDayKey');
+        const addMealInitialRecipeIdInput = document.getElementById('addMealInitialRecipeId'); // Added to pass initial recipe ID
+
+        // Clear previous state
+        addMealRecipeSelect.innerHTML = '<option value="">-- Select a Recipe --</option>';
+        addMealPlaceholderText.value = '';
+        addMealDayNameSpan.textContent = dayName || "a Day"; // Default text
+        addMealTargetDayKeyInput.value = dayKey || '';
+        addMealInitialRecipeIdInput.value = initialRecipeId || '';
+
+        // Populate recipe dropdown
         [...recipes].sort((a,b) => a.title.localeCompare(b.title)).forEach(r => {
-            sel.add(new Option(r.title, r.id));
+            const option = new Option(r.title, r.id);
+            addMealRecipeSelect.add(option);
+            if (r.id === initialRecipeId) {
+                option.selected = true; // Pre-select the recipe if provided
+            }
         });
-        document.getElementById('selectRecipeModal').classList.add('active');
+
+        // Show the modal
+        addMealModal.classList.add('active');
     }
 
-    document.getElementById('confirmSelectBtn').onclick = async () => {
-        const rid = document.getElementById('mealPlanSelectDropdown').value;
-        if(rid && targetDayKeyForAdd) {
-            if(!mealPlan[targetDayKeyForAdd]) mealPlan[targetDayKeyForAdd] = [];
-            if(mealPlan[targetDayKeyForAdd].includes(rid)) {
-                alert("Recipe already on this day's plan.");
-            } else {
-                mealPlan[targetDayKeyForAdd].push(rid);
-                await setDoc(doc(db, 'appData', 'mealPlan'),
- { plan: mealPlan });
-                renderMealPlanGrid();
-            }
-            document.getElementById('selectRecipeModal').classList.remove('active');
+    document.getElementById('confirmAddMealBtn').onclick = async () => {
+        const addMealRecipeSelect = document.getElementById('addMealRecipeSelect');
+        const addMealPlaceholderText = document.getElementById('addMealPlaceholderText');
+        const addMealTargetDayKey = document.getElementById('addMealTargetDayKey').value;
+        const addMealInitialRecipeId = document.getElementById('addMealInitialRecipeId').value;
+
+
+        const selectedRecipeId = addMealRecipeSelect.value;
+        const customMealText = addMealPlaceholderText.value.trim();
+
+        let mealItem = null;
+
+        // Determine if adding a recipe or a placeholder
+        if (selectedRecipeId) {
+            // Adding a recipe
+            mealItem = { type: 'recipe', id: selectedRecipeId };
+        } else if (customMealText) {
+            // Adding a placeholder
+            mealItem = { type: 'placeholder', text: customMealText, id: `placeholder-${Date.now()}` }; // Unique ID for placeholder
         } else {
-            alert("Please select a recipe.");
+            alert("Please select a recipe OR enter a custom meal name.");
+            return;
         }
+
+        if (!addMealTargetDayKey) {
+            alert("Internal Error: Target day not set.");
+            return;
+        }
+
+        if (!mealPlan[addMealTargetDayKey]) mealPlan[addMealTargetDayKey] = [];
+
+        // Check for duplicates (only for recipes for now)
+        if (mealItem.type === 'recipe' && mealPlan[addMealTargetDayKey].some(item => item.id === mealItem.id && item.type === 'recipe')) {
+            alert("This recipe is already on this day's plan.");
+        } else {
+            mealPlan[addMealTargetDayKey].push(mealItem);
+            await setDoc(doc(db, 'appData', 'mealPlan'), { plan: mealPlan });
+            updateDebugInfo(`Added ${mealItem.type === 'recipe' ? `recipe ${mealItem.id}` : `placeholder "${mealItem.text}"`} to ${addMealTargetDayKey}`);
+            renderMealPlanGrid(); // Re-render to show new item
+        }
+        document.getElementById('addMealItemModal').classList.remove('active');
     };
-    document.getElementById('cancelSelectBtn').onclick = () => document.getElementById('selectRecipeModal').classList.remove('active');
+
+    document.getElementById('cancelAddMealBtn').onclick = () => {
+        document.getElementById('addMealItemModal').classList.remove('active');
+    };
 
 
     // --- SMART SHOPPING & FRACTIONS ---
@@ -1097,15 +1229,18 @@ const firebaseConfig = {
         const week = document.getElementById('mealPlanWeekSelect').value;
         const allIngredientsRaw = [];
         
-        Object.keys(mealPlan).filter(k => k.startsWith(week)).forEach(k => {
-            mealPlan[k].forEach(rid => {
-                const r = recipes.find(x => x.id === rid);
-                if(r && r.ingredients) allIngredientsRaw.push(...r.ingredients);
+        Object.keys(mealPlan).filter(k => k.startsWith(week)).forEach(dayKey => {
+            mealPlan[dayKey].forEach(mealItem => {
+                // Only process recipes, ignore placeholders
+                if (mealItem.type === 'recipe') {
+                    const r = recipes.find(x => x.id === mealItem.id);
+                    if(r && r.ingredients) allIngredientsRaw.push(...r.ingredients);
+                }
             });
         });
 
         if (allIngredientsRaw.length === 0) {
-            div.innerHTML = '<p style="text-align:center; padding:20px;">No recipes in the meal plan for this week.</p>';
+            div.innerHTML = '<p style="text-align:center; padding:20px;">No recipes in the meal plan for this week to generate a shopping list.</p>';
             return;
         }
 
@@ -1206,11 +1341,14 @@ const firebaseConfig = {
             
             let mealPlanChanged = false;
             Object.keys(mealPlan).forEach(k => {
-                if(mealPlan[k].includes(id)) {
-                    mealPlan[k] = mealPlan[k].filter(x => x !== id);
-                    if(mealPlan[k].length === 0) delete mealPlan[k];
-                    mealPlanChanged = true;
-                }
+                mealPlan[k] = mealPlan[k].filter(item => {
+                    if (item.type === 'recipe' && item.id === id) {
+                        mealPlanChanged = true;
+                        return false; // remove this recipe from meal plan
+                    }
+                    return true;
+                });
+                if(mealPlan[k].length === 0) delete mealPlan[k];
             });
             if(mealPlanChanged) await setDoc(doc(db, 'appData', 'mealPlan'), { plan: mealPlan });
             updateDebugInfo("Meal plan updated.");
@@ -1547,6 +1685,7 @@ const firebaseConfig = {
         document.getElementById('modalTitle').textContent = "Add New Recipe";
         document.getElementById('recipeModal').classList.add('active');
     };
+    // Close all modals functionality
     document.querySelectorAll('.close-modal').forEach(b=>b.onclick=()=>document.querySelectorAll('.modal-overlay').forEach(m=>m.classList.remove('active')));
 
     // Edit Button in Detail View
@@ -1578,6 +1717,14 @@ const firebaseConfig = {
         currentImageFile = null; 
         
         document.getElementById('recipeModal').classList.add('active');
+    };
+
+    // Add to Plan Button in Detail View
+    document.getElementById('btnAddToPlanDetail').onclick = () => {
+        const r = recipes.find(x=>x.id===activeRecipeId);
+        if(r) {
+            openAddMealItemModal(null, null, r.id, r.title);
+        }
     };
 
     // Form Submit
